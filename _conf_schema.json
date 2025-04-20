@@ -1,0 +1,7 @@
+{
+    "api_key": {
+        "type": "string",
+        "description": "你的 osu! API key",
+        "hint": "在https://osu.ppy.sh/p/api申请 API key 后填写，如果缺少该项，部分功能将无法使用"
+    }
+}
