@@ -1,7 +1,7 @@
 import aiohttp
 import json
 import asyncio
-import osu
+import ossapi  # 使用 ossapi 替代 osu
 from typing import Tuple, Optional, Dict, Any, List
 from astrbot.api.event import filter, AstrMessageEvent, MessageEventResult
 from astrbot.api.star import Context, Star, register
@@ -17,7 +17,14 @@ class PluginFunctions:
     def set_api_key(self, api_key):
         """设置API密钥并初始化客户端"""
         self.api_key = api_key
-        self.osu_client = osu.Client(api_key)
+        # 使用正确的 osu API 客户端初始化方式
+        if api_key:
+            try:
+                self.osu_client = ossapi.OssapiV1(api_key)
+                logger.info("成功初始化 osu API 客户端")
+            except Exception as e:
+                logger.error(f"初始化 osu API 客户端失败: {str(e)}")
+                self.osu_client = None
     
     async def update_user_score(self, user_id: str, mode: int = 0) -> Tuple[bool, Optional[str], Optional[Dict[str, Any]]]:
         """
@@ -93,18 +100,11 @@ class PluginFunctions:
             return False, None
         
         try:
-            # 将osu库模式参数转换
-            osu_mode = None
-            if m is not None:
-                mode_map = {0: osu.GameMode.OSU, 1: osu.GameMode.TAIKO, 
-                           2: osu.GameMode.CATCH, 3: osu.GameMode.MANIA}
-                osu_mode = mode_map.get(int(m))
-            
-            # 使用osu库查询谱面
-            beatmaps = await self.osu_client.get_beatmaps(
+            # 直接使用 ossapi 的同步方法
+            beatmaps = self.osu_client.get_beatmaps(
                 since=since,
                 limit=limit,
-                mode=osu_mode
+                mode=m
             )
             
             if not beatmaps:
@@ -154,30 +154,36 @@ class PluginFunctions:
             return False, None
         
         try:
-            # 转换模式
-            mode_map = {0: osu.GameMode.OSU, 1: osu.GameMode.TAIKO, 
-                       2: osu.GameMode.CATCH, 3: osu.GameMode.MANIA}
-            osu_mode = mode_map.get(int(mode), osu.GameMode.OSU)
+            # 使用 ossapi 的同步方法
+            users = self.osu_client.get_user(user_id, mode=mode)
             
-            # 获取用户信息
-            user = await self.osu_client.get_user(user_id, mode=osu_mode)
+            # ossapi 可能返回列表或单个对象
+            user = users[0] if isinstance(users, list) and users else users
             
             if user:
+                # 确保从对象中获取属性，或从字典中获取键值
+                get_value = lambda obj, field, default: (
+                    getattr(obj, field, None) if hasattr(obj, '__dict__') 
+                    else obj.get(field, None) if isinstance(obj, dict) 
+                    else default
+                )
+                
+                user_id_value = get_value(user, 'user_id', user_id)
                 user_data = {
-                    "user_id": getattr(user, 'user_id', user_id),
-                    "username": getattr(user, 'username', 'Unknown'),
-                    "pp_rank": getattr(user, 'pp_rank', 0),
-                    "pp_raw": getattr(user, 'pp_raw', 0),
-                    "country": getattr(user, 'country', 'Unknown'),
-                    "accuracy": getattr(user, 'accuracy', 0),
-                    "level": getattr(user, 'level', 0),
-                    "playcount": getattr(user, 'playcount', 0),
-                    "count_rank_ss": getattr(user, 'count_rank_ss', 0),
-                    "count_rank_ssh": getattr(user, 'count_rank_ssh', 0),
-                    "count_rank_s": getattr(user, 'count_rank_s', 0),
-                    "count_rank_sh": getattr(user, 'count_rank_sh', 0),
-                    "count_rank_a": getattr(user, 'count_rank_a', 0),
-                    "avatar_url": f"https://a.ppy.sh/{getattr(user, 'user_id', user_id)}"
+                    "user_id": user_id_value,
+                    "username": get_value(user, 'username', 'Unknown'),
+                    "pp_rank": get_value(user, 'pp_rank', 0),
+                    "pp_raw": get_value(user, 'pp_raw', 0),
+                    "country": get_value(user, 'country', 'Unknown'),
+                    "accuracy": get_value(user, 'accuracy', 0),
+                    "level": get_value(user, 'level', 0),
+                    "playcount": get_value(user, 'playcount', 0),
+                    "count_rank_ss": get_value(user, 'count_rank_ss', 0),
+                    "count_rank_ssh": get_value(user, 'count_rank_ssh', 0),
+                    "count_rank_s": get_value(user, 'count_rank_s', 0),
+                    "count_rank_sh": get_value(user, 'count_rank_sh', 0),
+                    "count_rank_a": get_value(user, 'count_rank_a', 0),
+                    "avatar_url": f"https://a.ppy.sh/{user_id_value}"
                 }
                 return True, user_data
             else:
