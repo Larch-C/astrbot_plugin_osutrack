@@ -1,86 +1,24 @@
 import aiohttp
 import json
 import asyncio
-from typing import Tuple, Optional, Dict, Any
+import osu
+from typing import Tuple, Optional, Dict, Any, List
 from astrbot.api.event import filter, AstrMessageEvent, MessageEventResult
 from astrbot.api.star import Context, Star, register
 from astrbot.api import logger, AstrBotConfig
 import astrbot.api.message_components as Comp
 
-class OsuTrackAPI:
-    """
-    OsuTrack API
-    """
-    def __init__(self):
-        self.api_url = "https://osutrack-api.ameo.dev/"
-
-    async def update(self, user: str, mode: int = 0):
-        url = f"{self.api_url}update"
-        params = {
-            "user": user,
-            "mode": str(mode)
-        }
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(url, params=params) as response:
-                    if response.status == 200:
-                        return await response.json()
-                    else:
-                        error_text = await response.text()
-                        logger.error(f"OsuTrack API update失败: 状态码 {response.status}, 参数: {params}, 响应: {error_text}")
-                        return None
-        except Exception as e:
-            logger.error(f"OsuTrack API update请求异常: {str(e)}, 参数: {params}")
-            return None
-
-class OsuAPI:
-    """
-    Osu API
-    """
-    def __init__(self, api_key: str = None):
-        self.api_key = api_key
-        self.api_url = "https://osu.ppy.sh/p/api/"
-
-    def set_api_key(self, api_key: str):
-        self.api_key = api_key
-
-    async def get_beatmaps(self, k: str = None, since: str = None, s: int = None, b: int = None, u: str = None, type: str = None, m: int = None, a: int = 0, h: str = None, limit: int = 500, mods: int = 0):
-        url = f"{self.api_url}get_beatmaps"
-        params = {
-            "k": self.api_key if k is None else k,
-            "since": since,
-            "s": s,
-            "b": b,
-            "u": u,
-            "type": type,
-            "m": m,
-            "a": a,
-            "h": h,
-            "limit": limit,
-            "mods": mods
-        }
-        params = {k: v for k, v in params.items() if v is not None}
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(url, params=params) as response:
-                    if response.status == 200:
-                        return await response.json()
-                    else:
-                        error_text = await response.text()
-                        logger.error(f"Osu API get_beatmaps失败: 状态码 {response.status}, 参数: {params}, 响应: {error_text}")
-                        return None
-        except Exception as e:
-            logger.error(f"Osu API get_beatmaps请求异常: {str(e)}, 参数: {params}")
-            return None
-
 class PluginFunctions:
     def __init__(self):
-        self.osutrack = OsuTrackAPI()
-        self.osu = OsuAPI(api_key=None)
-
+        self.api_key = None
+        self.osu_client = None
+        self.osutrack_api_url = "https://osutrack-api.ameo.dev/"
+    
     def set_api_key(self, api_key):
-        self.osu.set_api_key(api_key)
-
+        """设置API密钥并初始化客户端"""
+        self.api_key = api_key
+        self.osu_client = osu.Client(api_key)
+    
     async def update_user_score(self, user_id: str, mode: int = 0) -> Tuple[bool, Optional[str], Optional[Dict[str, Any]]]:
         """
         更新用户成绩至 osu!track
@@ -92,46 +30,55 @@ class PluginFunctions:
                 - 成功标志
                 - 用户名
                 - API响应数据
-        Raises:
-            ValueError: 如果模式参数转换失败
-            Exception: 如果发生未知错误
         """
         if not user_id:
             logger.error("更新用户成绩失败: 未提供用户ID")
             return False, None, None
             
         try:
+            # 验证模式
             mode_int = int(mode)
             if mode_int not in [0, 1, 2, 3]:
                 logger.warning(f"更新用户成绩: 无效的模式值 {mode}，将使用默认模式 0")
                 mode_int = 0
-                
-            response: Optional[Dict[str, Any]] = await self.osutrack.update(user_id, mode_int)
             
-            if not response:
-                logger.error(f"更新用户成绩失败: 用户ID {user_id}, 模式 {mode_int}, API返回空响应")
-                return False, None, None
-                
-            username = response.get("username")
-            exists = response.get("exists", False)
+            # 调用osutrack API更新用户成绩
+            url = f"{self.osutrack_api_url}update"
+            params = {
+                "user": user_id,
+                "mode": str(mode_int)
+            }
             
-            if exists:
-                logger.info(f"成功更新用户 {username} (ID: {user_id}) 在模式 {mode_int} 的成绩")
-                return True, username, response
-            else:
-                logger.warning(f"用户 {username or user_id} 在模式 {mode_int} 无成绩更新")
-                return False, username, response
-                
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, params=params) as response:
+                    if response.status == 200:
+                        osutrack_response = await response.json()
+                        
+                        # 检查用户是否存在
+                        username = osutrack_response.get("username")
+                        exists = osutrack_response.get("exists", False)
+                        
+                        if exists:
+                            logger.info(f"成功更新用户 {username} (ID: {user_id}) 在模式 {mode_int} 的成绩")
+                            return True, username, osutrack_response
+                        else:
+                            logger.warning(f"用户 {username or user_id} 在模式 {mode_int} 无成绩更新")
+                            return False, username, osutrack_response
+                    else:
+                        error_text = await response.text()
+                        logger.error(f"OsuTrack API update失败: 状态码 {response.status}, 参数: {params}, 响应: {error_text}")
+                        return False, None, None
+                        
         except ValueError as e:
             logger.error(f"更新用户成绩失败: 模式参数转换错误 - {str(e)}")
             return False, None, None
         except Exception as e:
             logger.error(f"更新用户成绩时发生未知错误: {str(e)}")
             return False, None, None
-        
+    
     async def search_beatmap(self, since: str = None, limit: int = 5, m: int = None) -> Tuple[bool, Optional[Dict[str, Any]]]:
         """
-        查询谱面，需要api_key
+        使用osu库查询谱面
         Args:
             since (str): 查询时间
             limit (int): 返回数量
@@ -140,50 +87,111 @@ class PluginFunctions:
             Tuple[bool, Optional[Dict[str, Any]]]: 
                 - 成功标志
                 - 经过处理后的API响应数据
-        Raises:
-            ValueError: 如果模式参数转换失败
-            aiohttp.ClientError: 如果网络请求失败
-            json.JSONDecodeError: 如果JSON解析失败
-            Exception: 如果发生未知错误
         """
+        if not self.osu_client:
+            logger.error("查询谱面失败: 未初始化osu客户端")
+            return False, None
+        
         try:
-            response = await self.osu.get_beatmaps(since=since, limit=limit, m=m, k=self.osu.api_key)
-            if not response:
-                logger.error(f"查询谱面失败: API返回空响应")
-                return False, None, None
-            # 将响应数据简化为需要的字段
-            # 同一个"beatmapset_id"的谱面只保留一条
+            # 将osu库模式参数转换
+            osu_mode = None
+            if m is not None:
+                mode_map = {0: osu.GameMode.OSU, 1: osu.GameMode.TAIKO, 
+                           2: osu.GameMode.CATCH, 3: osu.GameMode.MANIA}
+                osu_mode = mode_map.get(int(m))
+            
+            # 使用osu库查询谱面
+            beatmaps = await self.osu_client.get_beatmaps(
+                since=since,
+                limit=limit,
+                mode=osu_mode
+            )
+            
+            if not beatmaps:
+                logger.warning("查询谱面失败: 未找到谱面")
+                return False, None
+            
+            # 处理返回的谱面数据
             beatmap_data = {}
-            for beatmap in response:
-                beatmapset_id = beatmap.get("beatmapset_id")
-                if beatmapset_id not in beatmap_data:
+            for beatmap in beatmaps:
+                beatmapset_id = getattr(beatmap, 'beatmapset_id', None)
+                if beatmapset_id and beatmapset_id not in beatmap_data:
                     beatmap_data[beatmapset_id] = {
-                        "beatmapset_id": beatmap.get("beatmapset_id"),
-                        "approved": beatmap.get("approved"),
-                        "title": beatmap.get("title"),
-                        "artist": beatmap.get("artist"),
-                        "creator": beatmap.get("creator"),
-                        "creator_id": beatmap.get("creator_id"),
-                        "total_length": beatmap.get("total_length"),
-                        "bpm": beatmap.get("bpm"),
-                        "tags": beatmap.get("tags"),
+                        "beatmapset_id": beatmapset_id,
+                        "approved": getattr(beatmap, 'approved', 'Unknown'),
+                        "title": getattr(beatmap, 'title', 'Unknown'),
+                        "artist": getattr(beatmap, 'artist', 'Unknown'),
+                        "creator": getattr(beatmap, 'creator', 'Unknown'),
+                        "creator_id": getattr(beatmap, 'creator_id', 'Unknown'),
+                        "total_length": getattr(beatmap, 'total_length', 0),
+                        "bpm": getattr(beatmap, 'bpm', 0),
+                        "tags": getattr(beatmap, 'tags', ''),
                         "cover_url": f"https://assets.ppy.sh/beatmaps/{beatmapset_id}/covers/cover.jpg"
                     }
+            
             return True, beatmap_data
+            
         except ValueError as e:
-            logger.error(f"查询谱面失败: 模式参数转换错误 - {str(e)}")
+            logger.error(f"查询谱面失败: 参数错误 - {str(e)}")
             return False, None
-        except aiohttp.ClientError as e:
-            logger.error(f"查询谱面失败: 网络请求错误 - {str(e)}")
-            return False, None
-        except json.JSONDecodeError as e:
-            logger.error(f"查询谱面失败: JSON解析错误 - {str(e)}")
-            return False, None         
         except Exception as e:
-            logger.error(f"查询谱面时发生未知错误: {str(e)}")
+            logger.error(f"查询谱面失败: {str(e)}")
+            return False, None
+    
+    async def get_user_info(self, user_id: str, mode: int = 0) -> Tuple[bool, Optional[Dict[str, Any]]]:
+        """
+        获取用户信息
+        Args:
+            user_id (str): 用户ID或用户名
+            mode (int): 模式，0: osu!, 1: osu!taiko, 2: osu!catch, 3: osu!mania
+        Returns:
+            Tuple[bool, Optional[Dict[str, Any]]]: 
+                - 成功标志
+                - 用户信息数据
+        """
+        if not self.osu_client:
+            logger.error("获取用户信息失败: 未初始化osu客户端")
+            return False, None
+        
+        try:
+            # 转换模式
+            mode_map = {0: osu.GameMode.OSU, 1: osu.GameMode.TAIKO, 
+                       2: osu.GameMode.CATCH, 3: osu.GameMode.MANIA}
+            osu_mode = mode_map.get(int(mode), osu.GameMode.OSU)
+            
+            # 获取用户信息
+            user = await self.osu_client.get_user(user_id, mode=osu_mode)
+            
+            if user:
+                user_data = {
+                    "user_id": getattr(user, 'user_id', user_id),
+                    "username": getattr(user, 'username', 'Unknown'),
+                    "pp_rank": getattr(user, 'pp_rank', 0),
+                    "pp_raw": getattr(user, 'pp_raw', 0),
+                    "country": getattr(user, 'country', 'Unknown'),
+                    "accuracy": getattr(user, 'accuracy', 0),
+                    "level": getattr(user, 'level', 0),
+                    "playcount": getattr(user, 'playcount', 0),
+                    "count_rank_ss": getattr(user, 'count_rank_ss', 0),
+                    "count_rank_ssh": getattr(user, 'count_rank_ssh', 0),
+                    "count_rank_s": getattr(user, 'count_rank_s', 0),
+                    "count_rank_sh": getattr(user, 'count_rank_sh', 0),
+                    "count_rank_a": getattr(user, 'count_rank_a', 0),
+                    "avatar_url": f"https://a.ppy.sh/{getattr(user, 'user_id', user_id)}"
+                }
+                return True, user_data
+            else:
+                logger.warning(f"获取用户信息失败: 未找到用户 {user_id}")
+                return False, None
+                
+        except ValueError as e:
+            logger.error(f"获取用户信息失败: 模式参数转换错误 - {str(e)}")
+            return False, None
+        except Exception as e:
+            logger.error(f"获取用户信息失败: {str(e)}")
             return False, None
 
-@register("osutrack","gameswu","基于osu!track与osu!api的osu!成绩查询插件","0.1.0","https://github.com/gameswu/astrbot_plugin_osutrack")
+@register("osutrack","gameswu","基于osu!track与osu!api的osu!成绩查询插件","0.1.2b","https://github.com/gameswu/astrbot_plugin_osutrack")
 class OsuTrackPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
@@ -217,12 +225,12 @@ class OsuTrackPlugin(Star):
         if not self.api_key:
             logger.error("查询谱面失败: 未提供API密钥")
             yield event.plain_result("查询谱面失败了喵: 主人要提供API密钥小夜才可以查询谱面喵~")
+            return
 
         result = await self.functions.search_beatmap(since=since, limit=limit, m=m)
         if result[0]:
             beatmap_data = result[1]
             if beatmap_data:
-                beatmap_list = []
                 for beatmap in beatmap_data.values():
                     chain = [
                         Comp.Image.fromURL(beatmap["cover_url"]),
@@ -242,6 +250,42 @@ class OsuTrackPlugin(Star):
         else:
             logger.warning(f"查询谱面失败: API返回空响应")
             yield event.plain_result("查询谱面失败了喵~")
+    
+    @filter.command("osu_user")
+    async def osu_user(self, event: AstrMessageEvent, user_id: str, mode: int = 0):
+        """
+        查询用户信息 需要api_key
+        """
+        if not self.api_key:
+            logger.error("查询用户信息失败: 未提供API密钥")
+            yield event.plain_result("查询用户信息失败了喵: 主人要提供API密钥小夜才可以查询用户信息喵~")
+            return
+        
+        result = await self.functions.get_user_info(user_id=user_id, mode=mode)
+        if result[0]:
+            user_data = result[1]
+            mode_names = {0: "osu!", 1: "taiko", 2: "catch", 3: "mania"}
+            mode_name = mode_names.get(mode, "osu!")
+            
+            chain = [
+                Comp.Image.fromURL(user_data["avatar_url"]),
+                Comp.Plain(f"用户名: {user_data['username']} (ID: {user_data['user_id']})"),
+                Comp.Plain(f"国家: {user_data['country']}"),
+                Comp.Plain(f"游戏模式: {mode_name}"),
+                Comp.Plain(f"PP: {user_data['pp_raw']}"),
+                Comp.Plain(f"全球排名: #{user_data['pp_rank']}"),
+                Comp.Plain(f"准确率: {user_data['accuracy']}%"),
+                Comp.Plain(f"等级: {user_data['level']}"),
+                Comp.Plain(f"游玩次数: {user_data['playcount']}"),
+                Comp.Plain(f"SS+: {user_data['count_rank_ssh']} | SS: {user_data['count_rank_ss']}"),
+                Comp.Plain(f"S+: {user_data['count_rank_sh']} | S: {user_data['count_rank_s']}"),
+                Comp.Plain(f"A: {user_data['count_rank_a']}"),
+                Comp.Plain(f"用户主页: https://osu.ppy.sh/users/{user_data['user_id']}")
+            ]
+            yield event.chain_result(chain)
+        else:
+            logger.warning(f"查询用户信息失败: 未找到用户 {user_id}")
+            yield event.plain_result(f"查询用户信息失败了喵: 未找到用户 {user_id} 喵~")
 
     async def terminate(self):
         return await super().terminate()

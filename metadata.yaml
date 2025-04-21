@@ -1,5 +1,5 @@
 name: osutrack # 这是你的插件的唯一识别名。
 desc: 调用osu!track与osu!官方api实现成绩上传和保存、谱面推荐等功能 # 插件简短描述
-version: v0.1.1b # 插件版本号。格式：v1.1.1 或者 v1.1
+version: v0.1.2b # 插件版本号。格式：v1.1.1 或者 v1.1
 author: gameswu # 作者
 repo: https://github.com/gameswu/astrbot_plugin_osutrack # 插件的仓库地址
