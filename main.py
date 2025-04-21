@@ -191,7 +191,7 @@ class PluginFunctions:
             logger.error(f"获取用户信息失败: {str(e)}")
             return False, None
 
-@register("osutrack","gameswu","基于osu!track与osu!api的osu!成绩查询插件","0.1.2b","https://github.com/gameswu/astrbot_plugin_osutrack")
+@register("osutrack","gameswu","基于osu!track与osu!api的osu!成绩查询插件","0.1.2","https://github.com/gameswu/astrbot_plugin_osutrack")
 class OsuTrackPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
