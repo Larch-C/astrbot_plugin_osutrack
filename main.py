@@ -1,11 +1,12 @@
 import aiohttp
 import json
 import asyncio
-import ossapi  # 使用 ossapi 替代 osu
+import ossapi
 from typing import Tuple, Optional, Dict, Any, List
 from astrbot.api.event import filter, AstrMessageEvent, MessageEventResult
 from astrbot.api.star import Context, Star, register
 from astrbot.api import logger, AstrBotConfig
+import random
 import astrbot.api.message_components as Comp
 
 class PluginFunctions:
@@ -83,12 +84,12 @@ class PluginFunctions:
             logger.error(f"更新用户成绩时发生未知错误: {str(e)}")
             return False, None, None
     
-    async def search_beatmap(self, since: str = None, limit: int = 5, m: int = None) -> Tuple[bool, Optional[Dict[str, Any]]]:
+    async def search_beatmap(self, since: str = None, count: int = 5, m: int = None) -> Tuple[bool, Optional[Dict[str, Any]]]:
         """
         使用osu库查询谱面
         Args:
             since (str): 查询时间
-            limit (int): 返回数量
+            count (int): 返回数量
             m (int): 模式，0: osu!, 1: osu!taiko, 2: osu!catch, 3: osu!mania
         Returns:
             Tuple[bool, Optional[Dict[str, Any]]]: 
@@ -99,11 +100,14 @@ class PluginFunctions:
             logger.error("查询谱面失败: 未初始化osu客户端")
             return False, None
         
+        count = 10 if count > 10 else count
+        count = 1 if count < 1 else count
+        
         try:
             # 直接使用 ossapi 的同步方法
             beatmaps = self.osu_client.get_beatmaps(
                 since=since,
-                limit=limit,
+                limit=500,
                 mode=m
             )
             
@@ -128,6 +132,13 @@ class PluginFunctions:
                         "tags": getattr(beatmap, 'tags', ''),
                         "cover_url": f"https://assets.ppy.sh/beatmaps/{beatmapset_id}/covers/cover.jpg"
                     }
+
+            # 限制返回数量
+            if len(beatmap_data) >= count:
+                beatmap_data = {k: beatmap_data[k] for k in random.sample(list(beatmap_data.keys()), min(count, len(beatmap_data)))}
+            else:
+                logger.warning(f"查询谱面成功: 返回 {len(beatmap_data)} 条谱面数据，但少于请求的数量 {count}")
+            logger.info(f"查询谱面成功: 返回 {len(beatmap_data)} 条谱面数据")
             
             return True, beatmap_data
             
@@ -142,7 +153,7 @@ class PluginFunctions:
         """
         获取用户信息
         Args:
-            user_id (str): 用户ID或用户名
+            user_id (str): 用户ID
             mode (int): 模式，0: osu!, 1: osu!taiko, 2: osu!catch, 3: osu!mania
         Returns:
             Tuple[bool, Optional[Dict[str, Any]]]: 
@@ -155,7 +166,7 @@ class PluginFunctions:
         
         try:
             # 使用 ossapi 的同步方法
-            users = self.osu_client.get_user(user_id, mode=mode)
+            users = self.osu_client.get_user(user_id, mode=mode, user_type= "id")
             
             # ossapi 可能返回列表或单个对象
             user = users[0] if isinstance(users, list) and users else users
@@ -218,7 +229,7 @@ class OsuTrackPlugin(Star):
                 "可用命令:\n"
                 "- /osu_help <cmd>: 显示帮助信息\n"
                 "- /osu_update [user_id] [mode]: 更新用户成绩\n"
-                "- /osu_beatmap <limit> <m> <since>: 查询谱面\n"
+                "- /osu_beatmap <count> <m> <since>: 查询谱面\n"
                 "- /osu_user [user_id] [mode]: 查询用户信息\n"
                 "~~~~~~~~\n"
                 "[] 表示必填参数； <> 表示选填参数\n"
@@ -229,8 +240,8 @@ class OsuTrackPlugin(Star):
             help_text = {
                 "osu_help": "显示帮助信息",
                 "osu_update": "更新用户成绩\n格式: /osu_update [user_id] [mode]\n参数说明:\n[user_id] 用户ID\n[mode] 模式 0: osu!, 1: osu!taiko, 2: osu!catch, 3: osu!mania",
-                "osu_beatmap": "查询谱面，需要提供osu! API key\n格式: /osu_beatmap <limit> <m> <since>\n参数说明:\n<limit> 返回数量，默认5\n<m> 模式 0: osu!, 1: osu!taiko, 2: osu!catch, 3: osu!mania\n<since> 查询自从该时间的谱面，格式: YYYY-MM-DD",
-                "osu_user": "查询用户信息，需要提供osu! API key\n格式: /osu_user [user_id] [mode]\n参数说明:\n[user_id] 用户ID或用户名\n[mode] 模式 0: osu!, 1: osu!taiko, 2: osu!catch, 3: osu!mania"
+                "osu_beatmap": "查询谱面，需要提供osu! API key\n格式: /osu_beatmap <count> <m> <since>\n参数说明:\n<count> 返回数量，默认5，在1～10之间取值\n<m> 模式 0: osu!, 1: osu!taiko, 2: osu!catch, 3: osu!mania\n<since> 查询自从该时间的谱面，格式: YYYY-MM-DD",
+                "osu_user": "查询用户信息，需要提供osu! API key\n格式: /osu_user [user_id] [mode]\n参数说明:\n[user_id] 用户ID\n[mode] 模式 0: osu!, 1: osu!taiko, 2: osu!catch, 3: osu!mania"
             }
             if cmd in help_text:
                 yield event.plain_result(f"{cmd}: {help_text[cmd]}")
@@ -269,14 +280,16 @@ class OsuTrackPlugin(Star):
                 for beatmap in beatmap_data.values():
                     chain = [
                         Comp.Image.fromURL(beatmap["cover_url"]),
-                        Comp.Plain("标题: " + beatmap["title"] + "\n"),
-                        Comp.Plain("艺术家: " + beatmap["artist"] + "\n"),
-                        Comp.Plain("作者: " + beatmap["creator"]+" (ID: " + str(beatmap["creator_id"]) + ")" + "\n"),
-                        Comp.Plain("谱面链接: " + f"https://osu.ppy.sh/beatmapsets/{beatmap['beatmapset_id']}" + "\n"),
-                        Comp.Plain("总时长: " + str(beatmap["total_length"]) + "秒" + "\n"),
-                        Comp.Plain("BPM: " + str(beatmap["bpm"]) + "\n"),
-                        Comp.Plain("标签: " + beatmap["tags"] + "\n"),
-                        Comp.Plain("谱面状态: " + str(beatmap["approved"]) + "\n")
+                        Comp.Plain(
+                            f"标题: {beatmap['title']}\n"
+                            f"艺术家: {beatmap['artist']}\n"
+                            f"作者: {beatmap['creator']} (ID: {beatmap['creator_id']})\n"
+                            f"谱面链接: https://osu.ppy.sh/beatmapsets/{beatmap['beatmapset_id']}\n"
+                            f"总时长: {beatmap['total_length']}秒\n"
+                            f"BPM: {beatmap['bpm']}\n"
+                            f"标签: {beatmap['tags']}\n"
+                            f"谱面状态: {beatmap['approved']}\n"
+                        )
                     ]
                     yield event.chain_result(chain)
                 yield event.plain_result("查询谱面成功了喵~")
@@ -304,18 +317,20 @@ class OsuTrackPlugin(Star):
             
             chain = [
                 Comp.Image.fromURL(user_data["avatar_url"]),
-                Comp.Plain(f"用户名: {user_data['username']} (ID: {user_data['user_id']})" + "\n"),
-                Comp.Plain(f"国家: {user_data['country']}" + "\n"),
-                Comp.Plain(f"游戏模式: {mode_name}" + "\n"),
-                Comp.Plain(f"PP: {user_data['pp_raw']}" + "\n"),
-                Comp.Plain(f"全球排名: #{user_data['pp_rank']}" + "\n"),
-                Comp.Plain(f"准确率: {user_data['accuracy']}%" + "\n"),
-                Comp.Plain(f"等级: {user_data['level']}" + "\n"),
-                Comp.Plain(f"游玩次数: {user_data['playcount']}" + "\n"),
-                Comp.Plain(f"SS+: {user_data['count_rank_ssh']} | SS: {user_data['count_rank_ss']}" + "\n"),
-                Comp.Plain(f"S+: {user_data['count_rank_sh']} | S: {user_data['count_rank_s']}" + "\n"),
-                Comp.Plain(f"A: {user_data['count_rank_a']}" + "\n"),
-                Comp.Plain(f"用户主页: https://osu.ppy.sh/users/{user_data['user_id']}")
+                Comp.Plain(
+                    f"用户名: {user_data['username']} (ID: {user_data['user_id']})\n"
+                    f"国家: {user_data['country']}\n"
+                    f"游戏模式: {mode_name}\n"
+                    f"PP: {user_data['pp_raw']}\n"
+                    f"全球排名: #{user_data['pp_rank']}\n"
+                    f"准确率: {user_data['accuracy']}%\n"
+                    f"等级: {user_data['level']}\n"
+                    f"游玩次数: {user_data['playcount']}\n"
+                    f"SS+: {user_data['count_rank_ssh']} | SS: {user_data['count_rank_ss']}\n"
+                    f"S+: {user_data['count_rank_sh']} | S: {user_data['count_rank_s']}\n"
+                    f"A: {user_data['count_rank_a']}\n"
+                    f"用户主页: https://osu.ppy.sh/users/{user_data['user_id']}"
+                )
             ]
             yield event.chain_result(chain)
             yield event.plain_result("查询用户信息成功了喵~")

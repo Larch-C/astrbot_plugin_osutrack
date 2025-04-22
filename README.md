@@ -27,7 +27,7 @@
 ### 指令
 - `/osu_help` - 查看帮助
 - `/osu_upload` - 上传成绩至osu!track
-- `/osu_search` - 搜索谱面
+- `/osu_beatmap` - 搜索谱面
 - `/osu_user` - 查询玩家成绩
 
 具体说明请查看`/osu_help`指令的帮助信息
