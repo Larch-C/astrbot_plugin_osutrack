@@ -37,6 +37,19 @@ class HelpCommandInfo(Enum):
         "[模式] 可选值: osu, taiko, fruits, mania\n\n"
         "上传成绩到 OSU!track（默认 osu 模式）\n"
     )
+    FRIEND = (
+        "参数: 无\n\n"
+        "查看好友列表\n"
+    )
+    SEARCH = (
+        "参数: <关键词> [单页数量] [页码] [高级搜索]\n"
+        "<关键词> - 搜索关键词\n"
+        "[单页数量] - 每页显示的结果数量（默认为 10）\n"
+        "[页码] - 要查询的页码（默认为 1）\n"
+        "[高级搜索] - 是否启用高级搜索（默认为 false），输入advanced以启用\n"
+        "\n"
+        "查询谱面\n"
+    )
 
     @classmethod
     def get(cls, command: str) -> str:

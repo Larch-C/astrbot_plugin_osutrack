@@ -146,6 +146,19 @@ class LinkAccountManager:
         data = self._load_data()
         return data["osu_to_platforms"].get(osu_id, [])
     
+    def get_platform_id_by_osu(self, osu_id: Union[str, int]) -> Optional[str]:
+        """
+        根据 OSU 账号 ID 获取第一个关联的平台 ID
+        
+        Args:
+            osu_id: OSU 账号 ID
+            
+        Returns:
+            Optional[str]: 第一个平台 ID，如果未关联则返回 None
+        """
+        platform_ids = self.get_platform_ids_by_osu(osu_id)
+        return platform_ids[0] if platform_ids else None
+    
     def is_platform_linked(self, platform_id: Union[str, int]) -> bool:
         """
         检查平台 ID 是否已关联 OSU 账号

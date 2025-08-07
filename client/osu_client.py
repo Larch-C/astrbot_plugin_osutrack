@@ -1,10 +1,18 @@
 from astrbot.api import logger
 
-from typing import Optional, Dict, Any, Union
+from typing import Optional, Dict, Any, Union, List
 import json
 from aiohttp import ClientSession
 
 from ..osuapi.user import UserExtended
+from ..osuapi.beatmap import BeatmapExtended
+from ..osuapi.beatmapset import Beatmapset, BeatmapsetExtended
+from ..osuapi.enumtype import Scopes
+from ..osuapi.beatmapset_search import (
+    BeatmapsetSearchResult, BeatmapsetSearchCursor,
+    BeatmapsetSearchMode, BeatmapsetSearchCategory, BeatmapsetSearchExplicitContent,
+    BeatmapsetSearchGenre, BeatmapsetSearchLanguage, BeatmapsetSearchSort
+)
 from .token_manager import TokenManager
 
 
@@ -285,7 +293,7 @@ class OsuClient:
             返回的数据包含 session_verified 属性和所有游戏模式的统计信息
         """
         # 检查是否具有 identify 权限
-        if not self._check_scope_permission(platform_id, "identify"):
+        if not self._check_scope_permission(platform_id, Scopes.IDENTIFY.value):
             raise ValueError(f"Token for platform_id {platform_id} does not have 'identify' scope required for /me endpoint")
         
         # 构建端点路径
@@ -305,6 +313,42 @@ class OsuClient:
             
         except Exception as e:
             logger.error(f"Failed to fetch own user data: {e}")
+            raise
+
+    async def get_friends(self, platform_id: str) -> List[UserExtended]:
+        """
+        获取好友列表
+        
+        Args:
+            platform_id: 平台用户 ID
+            
+        Returns:
+            List[UserExtended]: 好友用户列表
+            
+        Raises:
+            ValueError: 如果 token 不存在或无效
+            Exception: API 请求失败时
+        """
+        # 检查是否具有 friends.read 权限
+        if not self._check_scope_permission(platform_id, Scopes.FRIENDS.value):
+            raise ValueError(f"Token for platform_id {platform_id} does not have '{Scopes.FRIENDS.value}' scope required for /friends endpoint")
+        
+        try:
+            logger.info(f"Fetching friends list (platform_id: {platform_id})")
+            response_data = await self._make_api_request(platform_id, "friends")
+            
+            # 转换为 UserExtended 对象列表
+            friends = []
+            if isinstance(response_data, list):
+                for friend_data in response_data:
+                    friend_user = UserExtended.from_dict(friend_data)
+                    friends.append(friend_user)
+            
+            logger.info(f"Successfully fetched {len(friends)} friends")
+            return friends
+            
+        except Exception as e:
+            logger.error(f"Failed to fetch friends list: {e}")
             raise
 
     def has_valid_token(self, platform_id: str) -> bool:
@@ -352,3 +396,278 @@ class OsuClient:
             "scope": token_data.scope,
             "is_expired": self.token_manager.is_token_expired(platform_id)
         }
+
+    async def get_beatmap(self, platform_id: str, beatmap_id: int) -> BeatmapExtended:
+        """
+        获取指定 Beatmap 的详细信息
+        
+        Args:
+            platform_id: 平台用户 ID，用于获取访问令牌
+            beatmap_id: Beatmap ID
+            
+        Returns:
+            BeatmapExtended: Beatmap 详细信息对象
+            
+        Raises:
+            ValueError: 如果没有有效的 token 或 beatmap_id 无效
+            Exception: API 请求失败
+        """
+        if not isinstance(beatmap_id, int) or beatmap_id <= 0:
+            raise ValueError(f"Invalid beatmap_id: {beatmap_id}. Must be a positive integer.")
+        
+        # 检查是否有 public 权限
+        if not self._check_scope_permission(platform_id, Scopes.PUBLIC.value):
+            raise ValueError("Insufficient permissions: 'public' scope required for beatmap access")
+        
+        try:
+            logger.info(f"Fetching beatmap {beatmap_id} for platform_id {platform_id}")
+            
+            endpoint = f"beatmaps/{beatmap_id}"
+            response_data = await self._make_api_request(platform_id, endpoint)
+            
+            beatmap = BeatmapExtended.from_dict(response_data)
+            
+            logger.info(f"Successfully fetched beatmap {beatmap_id}: {beatmap.version} by {beatmap.beatmapset.creator if beatmap.beatmapset else 'Unknown'}")
+            return beatmap
+            
+        except Exception as e:
+            logger.error(f"Failed to fetch beatmap {beatmap_id}: {e}")
+            raise
+
+    async def get_beatmapset(self, platform_id: str, beatmapset_id: int) -> BeatmapsetExtended:
+        """
+        获取指定 Beatmapset 的详细信息
+        
+        Args:
+            platform_id: 平台用户 ID，用于获取访问令牌
+            beatmapset_id: Beatmapset ID
+            
+        Returns:
+            BeatmapsetExtended: Beatmapset 详细信息对象
+            
+        Raises:
+            ValueError: 如果没有有效的 token 或 beatmapset_id 无效
+            Exception: API 请求失败
+        """
+        if not isinstance(beatmapset_id, int) or beatmapset_id <= 0:
+            raise ValueError(f"Invalid beatmapset_id: {beatmapset_id}. Must be a positive integer.")
+        
+        # 检查是否有 public 权限
+        if not self._check_scope_permission(platform_id, Scopes.PUBLIC.value):
+            raise ValueError("Insufficient permissions: 'public' scope required for beatmapset access")
+        
+        try:
+            logger.info(f"Fetching beatmapset {beatmapset_id} for platform_id {platform_id}")
+            
+            endpoint = f"beatmapsets/{beatmapset_id}"
+            response_data = await self._make_api_request(platform_id, endpoint)
+            
+            beatmapset = BeatmapsetExtended.from_dict(response_data)
+            
+            logger.info(f"Successfully fetched beatmapset {beatmapset_id}: {beatmapset.title} by {beatmapset.creator}")
+            return beatmapset
+            
+        except Exception as e:
+            logger.error(f"Failed to fetch beatmapset {beatmapset_id}: {e}")
+            logger.error(f"Response data type: {type(response_data) if 'response_data' in locals() else 'N/A'}")
+            if 'response_data' in locals():
+                logger.error(f"Response data keys: {list(response_data.keys()) if isinstance(response_data, dict) else 'Not a dict'}")
+            raise
+
+    async def lookup_beatmapset(self, platform_id: str, checksum: Optional[str] = None, 
+                               filename: Optional[str] = None) -> BeatmapsetExtended:
+        """
+        通过校验和或文件名查找 Beatmapset
+        
+        Args:
+            platform_id: 平台用户 ID，用于获取访问令牌
+            checksum: Beatmap 文件的 MD5 校验和
+            filename: Beatmap 文件名
+            
+        Returns:
+            BeatmapsetExtended: Beatmapset 详细信息对象
+            
+        Raises:
+            ValueError: 如果没有有效的 token 或参数无效
+            Exception: API 请求失败
+            
+        Note:
+            至少需要提供 checksum 或 filename 中的一个参数
+        """
+        if not checksum and not filename:
+            raise ValueError("At least one of 'checksum' or 'filename' must be provided")
+        
+        # 检查是否有 public 权限
+        if not self._check_scope_permission(platform_id, Scopes.PUBLIC.value):
+            raise ValueError("Insufficient permissions: 'public' scope required for beatmapset lookup")
+        
+        # 构建查询参数
+        params = {}
+        if checksum:
+            params["checksum"] = checksum
+        if filename:
+            params["filename"] = filename
+        
+        try:
+            logger.info(f"Looking up beatmapset with params: {params} for platform_id {platform_id}")
+            
+            endpoint = "beatmapsets/lookup"
+            response_data = await self._make_api_request(platform_id, endpoint, params=params)
+            
+            beatmapset = BeatmapsetExtended.from_dict(response_data)
+            
+            logger.info(f"Successfully found beatmapset: {beatmapset.title} by {beatmapset.creator}")
+            return beatmapset
+            
+        except Exception as e:
+            logger.error(f"Failed to lookup beatmapset with params {params}: {e}")
+            raise
+
+    async def search_beatmapsets(self, platform_id: str, query: Optional[str] = None, *,
+                                mode: Union[BeatmapsetSearchMode, int] = BeatmapsetSearchMode.ANY,
+                                category: Union[BeatmapsetSearchCategory, str] = BeatmapsetSearchCategory.ANY,
+                                explicit_content: Union[BeatmapsetSearchExplicitContent, str] = BeatmapsetSearchExplicitContent.HIDE,
+                                genre: Union[BeatmapsetSearchGenre, int] = BeatmapsetSearchGenre.ANY,
+                                language: Union[BeatmapsetSearchLanguage, int] = BeatmapsetSearchLanguage.ANY,
+                                force_video: bool = False,
+                                force_storyboard: bool = False,
+                                force_recommended_difficulty: bool = False,
+                                include_converts: bool = False,
+                                force_followed_mappers: bool = False,
+                                force_spotlights: bool = False,
+                                force_featured_artists: bool = False,
+                                cursor: Optional[Union[BeatmapsetSearchCursor, str]] = None,
+                                sort: Optional[Union[BeatmapsetSearchSort, str]] = None) -> BeatmapsetSearchResult:
+        """
+        搜索 Beatmapset，等同于网站上的谱面搜索页面
+        
+        Args:
+            platform_id: 平台用户 ID，用于获取访问令牌
+            query: 搜索查询，可以包含过滤器如 "ranked<2019"
+            mode: 按模式过滤
+            category: 按类别过滤
+            explicit_content: 是否包含显式内容的谱面
+            genre: 按音乐类型过滤
+            language: 按语言过滤
+            force_video: True 仅返回包含视频的谱面集
+            force_storyboard: True 仅返回包含故事板的谱面集
+            force_recommended_difficulty: True 按推荐难度过滤
+            include_converts: True 包含转换的谱面集
+            force_followed_mappers: True 仅返回关注的谱师制作的谱面集
+            force_spotlights: True 仅返回聚光灯谱面集
+            force_featured_artists: True 仅返回精选艺术家的谱面集
+            cursor: 分页游标
+            sort: 排序方式
+            
+        Returns:
+            BeatmapsetSearchResult: 搜索结果对象
+            
+        Raises:
+            ValueError: 如果没有有效的 token
+            Exception: API 请求失败
+        """
+        # 检查是否有 public 权限
+        if not self._check_scope_permission(platform_id, Scopes.PUBLIC.value):
+            raise ValueError("Insufficient permissions: 'public' scope required for beatmapset search")
+        
+        # 构建查询参数
+        params = {}
+        
+        if query:
+            params["q"] = query
+        
+        # 处理枚举参数
+        if isinstance(mode, BeatmapsetSearchMode):
+            params["m"] = mode.value
+        elif mode:
+            params["m"] = str(mode)
+        
+        if isinstance(category, BeatmapsetSearchCategory):
+            params["s"] = category.value
+        elif category:
+            params["s"] = str(category)
+        
+        if isinstance(explicit_content, BeatmapsetSearchExplicitContent):
+            params["nsfw"] = explicit_content.value
+        elif explicit_content:
+            params["nsfw"] = str(explicit_content)
+        
+        if isinstance(genre, BeatmapsetSearchGenre):
+            params["g"] = genre.value
+        elif genre:
+            params["g"] = int(genre)
+        
+        if isinstance(language, BeatmapsetSearchLanguage):
+            params["l"] = language.value
+        elif language:
+            params["l"] = int(language)
+        
+        # 处理布尔参数
+        extra_params = []
+        if force_video:
+            extra_params.append("video")
+        if force_storyboard:
+            extra_params.append("storyboard")
+        if force_recommended_difficulty:
+            extra_params.append("recommended")
+        if include_converts:
+            extra_params.append("converts")
+        if force_followed_mappers:
+            extra_params.append("follows")
+        if force_spotlights:
+            extra_params.append("spotlights")
+        if force_featured_artists:
+            extra_params.append("featured_artists")
+        
+        if extra_params:
+            params["e"] = ".".join(extra_params)
+        
+        # 处理游标
+        if cursor:
+            if isinstance(cursor, BeatmapsetSearchCursor):
+                if cursor.cursor_string:
+                    params["cursor_string"] = cursor.cursor_string
+            elif isinstance(cursor, str):
+                params["cursor_string"] = cursor
+        
+        # 处理排序
+        if sort:
+            if isinstance(sort, BeatmapsetSearchSort):
+                params["sort"] = sort.value
+            else:
+                params["sort"] = str(sort)
+        
+        try:
+            logger.info(f"Searching beatmapsets with query: '{query}' for platform_id {platform_id}")
+            
+            endpoint = "beatmapsets/search"
+            response_data = await self._make_api_request(platform_id, endpoint, params=params)
+
+            logger.info(f"Search response data: {response_data}")
+            
+            search_result = BeatmapsetSearchResult.from_dict(response_data)
+            
+            logger.info(f"Successfully searched beatmapsets: found {len(search_result.beatmapsets)} results")
+            return search_result
+            
+        except Exception as e:
+            logger.error(f"Failed to search beatmapsets with query '{query}': {e}")
+            raise
+
+    async def simple_search_beatmapsets(self, platform_id: str, query: str) -> BeatmapsetSearchResult:
+        """
+        简化的谱面搜索方法，使用默认参数
+        
+        Args:
+            platform_id: 平台用户 ID，用于获取访问令牌
+            query: 搜索查询字符串
+            
+        Returns:
+            BeatmapsetSearchResult: 搜索结果对象
+        """
+        return await self.search_beatmapsets(
+            platform_id=platform_id,
+            query=query,
+            category=BeatmapsetSearchCategory.ANY,
+            explicit_content=BeatmapsetSearchExplicitContent.HIDE
+        )

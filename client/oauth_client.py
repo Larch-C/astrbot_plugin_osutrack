@@ -3,9 +3,10 @@ from astrbot.api import logger
 import aiohttp
 import time
 import urllib.parse
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 
 from .token_manager import TokenManager, TokenData
+from ..osuapi.enumtype import Scopes
 
 class OsuOAuthClient:
     """OSU OAuth 客户端"""
@@ -21,13 +22,29 @@ class OsuOAuthClient:
         self.token_url = "https://osu.ppy.sh/oauth/token"
         self.api_base_url = "https://osu.ppy.sh/api/v2"
     
-    def get_authorization_url(self, state: str = None) -> str:
-        """生成授权 URL"""
+    def get_authorization_url(self, state: str = None, scopes: List[Scopes] = None) -> str:
+        """
+        生成授权 URL
+        
+        Args:
+            state: 可选的状态参数
+            scopes: 权限范围列表，默认包含 PUBLIC、IDENTIFY 和 FRIENDS
+        
+        Returns:
+            str: 授权 URL
+        """
+        if scopes is None:
+            # 默认包含基本权限和好友权限
+            scopes = [Scopes.PUBLIC, Scopes.IDENTIFY, Scopes.FRIENDS]
+        
+        # 将枚举转换为字符串并用空格连接
+        scope_string = " ".join([scope.value for scope in scopes])
+        
         params = {
             "client_id": self.client_id,
             "redirect_uri": self.redirect_uri,
             "response_type": "code",
-            "scope": "public identify"
+            "scope": scope_string
         }
         
         if state:
@@ -68,7 +85,7 @@ class OsuOAuthClient:
                     refresh_token=token_response["refresh_token"],
                     expires_at=expires_at,
                     token_type=token_response.get("token_type", "Bearer"),
-                    scope="public identify"
+                    scope=token_response.get("scope", "public identify friends.read")
                 )
     
     async def refresh_token(self, platform_id: str) -> Optional[TokenData]:
@@ -82,7 +99,7 @@ class OsuOAuthClient:
             "client_secret": self.client_secret,
             "grant_type": "refresh_token",
             "refresh_token": token_data.refresh_token,
-            "scope": "public identify"
+            "scope": token_data.scope or "public identify friends.read"
         }
         
         headers = {
@@ -107,7 +124,7 @@ class OsuOAuthClient:
                     refresh_token=token_response["refresh_token"],
                     expires_at=expires_at,
                     token_type=token_response.get("token_type", "Bearer"),
-                    scope=token_data.scope
+                    scope=token_response.get("scope", token_data.scope or "public identify friends.read")
                 )
                 
                 # 保存新的 token

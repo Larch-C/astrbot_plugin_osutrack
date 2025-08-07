@@ -18,7 +18,7 @@ from .osuapi.trans import convert_osu_mode_to_track_mode, validate_osu_mode
 from .osutrackapi.enums import GameMode
 from .help_info import HelpCommandInfo
 
-@register("osu","gameswu","基于osu!track与osu!api的osu!插件","0.2.0","https://github.com/gameswu/astrbot_plugin_osutrack")
+@register("osu","gameswu","基于osu!track与osu!api的osu!插件","0.2.1","https://github.com/gameswu/astrbot_plugin_osutrack")
 class OsuTrackPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
@@ -603,6 +603,828 @@ class OsuTrackPlugin(Star):
                 "请稍后重试或检查网络连接"
             )]))
 
+    @osu.command("map")
+    async def get_beatmap(self, event: AstrMessageEvent, beatmap_id: str):
+        """
+        查询指定谱面的详细信息
+        
+        Args:
+            beatmap_id: 谱面ID
+        """
+        if not beatmap_id:
+            await event.send(MessageChain([Comp.Plain(
+                "❌ 请提供谱面ID\n"
+                "用法: /osu map <谱面ID>\n"
+                "示例: /osu map 129891"
+            )]))
+            return
+        
+        # 验证谱面ID格式
+        if not beatmap_id.isdigit():
+            await event.send(MessageChain([Comp.Plain(
+                f"❌ 无效的谱面ID: {beatmap_id}\n"
+                "谱面ID必须是数字"
+            )]))
+            return
+        
+        # 检查用户认证状态（需要 public 权限）
+        auth_ok, platform_id, osu_id = await self._check_user_authentication(event, [Scopes.PUBLIC])
+        if not auth_ok:
+            return
+        
+        try:
+            await event.send(MessageChain([Comp.Plain(f"🔄 正在查询谱面 {beatmap_id} 的信息...")]))
+            
+            # 获取谱面信息
+            beatmap_info = await self.osu_client.get_beatmap(platform_id, int(beatmap_id))
+            
+            # 格式化谱面信息
+            beatmap_message = self._format_beatmap_info(beatmap_info)
+            
+            await event.send(MessageChain([Comp.Plain(beatmap_message)]))
+            
+        except Exception as e:
+            logger.error(f"查询谱面 {beatmap_id} 信息失败: {e}")
+            await event.send(MessageChain([Comp.Plain(
+                f"❌ 查询谱面 {beatmap_id} 失败: {str(e)}\n"
+                "请检查谱面ID是否正确，或稍后重试"
+            )]))
+
+    @osu.command("mapset")
+    async def get_beatmapset(self, event: AstrMessageEvent, mapset_id: str):
+        """
+        查询指定谱面集的详细信息
+        
+        Args:
+            mapset_id: 谱面集ID
+        """
+        if not mapset_id:
+            await event.send(MessageChain([Comp.Plain(
+                "❌ 请提供谱面集ID\n"
+                "用法: /osu mapset <谱面集ID>\n"
+                "示例: /osu mapset 41823"
+            )]))
+            return
+        
+        # 验证谱面集ID格式
+        if not mapset_id.isdigit():
+            await event.send(MessageChain([Comp.Plain(
+                f"❌ 无效的谱面集ID: {mapset_id}\n"
+                "谱面集ID必须是数字"
+            )]))
+            return
+        
+        # 检查用户认证状态（需要 public 权限）
+        auth_ok, platform_id, osu_id = await self._check_user_authentication(event, [Scopes.PUBLIC])
+        if not auth_ok:
+            return
+        
+        try:
+            await event.send(MessageChain([Comp.Plain(f"🔄 正在查询谱面集 {mapset_id} 的信息...")]))
+            
+            # 获取谱面集信息
+            beatmapset_info = await self.osu_client.get_beatmapset(platform_id, int(mapset_id))
+            
+            # 格式化谱面集信息
+            cover_url, beatmapset_message = self._format_beatmapset_info(beatmapset_info)
+            
+            # 构建消息链
+            chain = []
+            if cover_url:
+                chain.append(Comp.Image.fromURL(cover_url))
+            chain.append(Comp.Plain(beatmapset_message))
+            
+            await event.send(MessageChain(chain))
+            
+        except Exception as e:
+            logger.error(f"查询谱面集 {mapset_id} 信息失败: {e}")
+            await event.send(MessageChain([Comp.Plain(
+                f"❌ 查询谱面集 {mapset_id} 失败: {str(e)}\n"
+                "请检查谱面集ID是否正确，或稍后重试"
+            )]))
+
+    @osu.command("mapsets")
+    async def get_beatmapsets(self, event: AstrMessageEvent):
+        """
+        批量查询多个谱面集的信息
+        通过对话模式获取谱面集ID列表
+        """
+        # 检查用户认证状态（需要 public 权限）
+        auth_ok, platform_id, osu_id = await self._check_user_authentication(event, [Scopes.PUBLIC])
+        if not auth_ok:
+            return
+        
+        # 发送提示信息
+        prompt_message = (
+            "📊 批量谱面集查询\n\n"
+            "请在接下来的消息中发送要查询的谱面集ID，用空格分隔：\n"
+            "📝 示例: 41823 129891 55496 162019\n"
+            "📝 最多支持 20 个谱面集ID\n"
+            "⏰ 请在 5 分钟内发送，超时将取消查询"
+        )
+        
+        await event.send(MessageChain([Comp.Plain(prompt_message)]))
+        
+        # 等待用户输入谱面集ID列表
+        @session_waiter(timeout=300)  # 5分钟超时
+        async def handle_mapset_ids_input(controller: SessionController, event: AstrMessageEvent):
+            try:
+                user_input = event.message_str.strip()
+                
+                # 检查是否取消
+                if user_input.lower() in ['取消', 'cancel', '退出', 'quit']:
+                    await event.send(MessageChain([Comp.Plain("❌ 已取消批量查询")]))
+                    controller.stop()
+                    return
+                
+                # 解析谱面集ID列表
+                mapset_ids = user_input.split()
+                if not mapset_ids:
+                    await event.send(MessageChain([Comp.Plain(
+                        "❌ 请提供至少一个谱面集ID\n"
+                        "请重新发送谱面集ID，用空格分隔"
+                    )]))
+                    controller.keep(60)  # 继续等待 60 秒
+                    return
+                
+                # 检查数量限制
+                if len(mapset_ids) > 20:
+                    await event.send(MessageChain([Comp.Plain(
+                        f"❌ 最多支持同时查询 20 个谱面集\n"
+                        f"您提供了 {len(mapset_ids)} 个谱面集ID\n"
+                        "请重新发送，减少谱面集ID数量"
+                    )]))
+                    controller.keep(60)
+                    return
+                
+                # 验证谱面集ID格式
+                valid_ids = []
+                invalid_ids = []
+                
+                for mapset_id in mapset_ids:
+                    if mapset_id.isdigit():
+                        valid_ids.append(int(mapset_id))
+                    else:
+                        invalid_ids.append(mapset_id)
+                
+                # 如果有无效ID，提示用户
+                if invalid_ids:
+                    await event.send(MessageChain([Comp.Plain(
+                        f"⚠️ 发现无效的谱面集ID: {', '.join(invalid_ids)}\n"
+                        f"将继续查询其余 {len(valid_ids)} 个有效ID"
+                    )]))
+                
+                if not valid_ids:
+                    await event.send(MessageChain([Comp.Plain(
+                        "❌ 没有找到有效的谱面集ID\n"
+                        "请重新发送正确格式的谱面集ID（必须是数字）"
+                    )]))
+                    controller.keep(60)
+                    return
+                
+                await event.send(MessageChain([Comp.Plain(f"🔄 正在查询 {len(valid_ids)} 个谱面集的信息...")]))
+                
+                # 逐个获取谱面集信息
+                successful_count = 0
+                failed_count = 0
+                
+                for i, mapset_id in enumerate(valid_ids, 1):
+                    try:
+                        # 获取谱面集信息
+                        beatmapset_info = await self.osu_client.get_beatmapset(platform_id, mapset_id)
+                        
+                        # 格式化谱面集信息
+                        cover_url, beatmapset_message = self._format_beatmapset_info(beatmapset_info)
+                        
+                        # 构建消息链
+                        chain = []
+                        if cover_url:
+                            chain.append(Comp.Image.fromURL(cover_url))
+                        
+                        # 添加序号前缀
+                        prefixed_message = f"【{i}/{len(valid_ids)}】\n{beatmapset_message}"
+                        chain.append(Comp.Plain(prefixed_message))
+                        
+                        # 发送单个谱面集信息
+                        await event.send(MessageChain(chain))
+                        successful_count += 1
+                        
+                        # 稍微延迟避免发送过快
+                        if i < len(valid_ids):  # 最后一个不需要延迟
+                            await asyncio.sleep(0.5)
+                            
+                    except Exception as e:
+                        logger.error(f"查询谱面集 {mapset_id} 失败: {e}")
+                        await event.send(MessageChain([Comp.Plain(
+                            f"❌ 【{i}/{len(valid_ids)}】查询谱面集 {mapset_id} 失败: {str(e)}"
+                        )]))
+                        failed_count += 1
+                
+                # 发送总结信息
+                summary_message = f"✅ 批量查询完成！成功: {successful_count}, 失败: {failed_count}"
+                await event.send(MessageChain([Comp.Plain(summary_message)]))
+                
+                controller.stop()
+                
+            except Exception as e:
+                logger.error(f"批量查询谱面集信息失败: {e}")
+                await event.send(MessageChain([Comp.Plain(
+                    f"❌ 批量查询失败: {str(e)}\n"
+                    "请检查谱面集ID是否正确，或稍后重试"
+                )]))
+                controller.stop()
+        
+        # 开始等待用户输入
+        try:
+            await handle_mapset_ids_input(event)
+        except TimeoutError:
+            await event.send(MessageChain([Comp.Plain(
+                "⏰ 输入超时（5分钟），批量查询已取消\n"
+                "请重新使用 /osu mapsets 开始查询"
+            )]))
+
+    @osu.command("friend")
+    async def get_friends(self, event: AstrMessageEvent):
+        """
+        获取好友列表
+        显示每个好友的头像、昵称和在线状态
+        """
+        # 检查用户认证状态（需要 friends.read 权限）
+        auth_ok, platform_id, osu_id = await self._check_user_authentication(event, [Scopes.FRIENDS])
+        if not auth_ok:
+            return
+        
+        try:
+            await event.send(MessageChain([Comp.Plain("🔄 正在获取好友列表...")]))
+            
+            # 获取好友列表
+            friends = await self.osu_client.get_friends(platform_id)
+            
+            if not friends:
+                await event.send(MessageChain([Comp.Plain(
+                    "👥 您的好友列表为空\n"
+                    "可以在 OSU 官网添加好友后再查看"
+                )]))
+                return
+            
+            # OSU API 的 /friends 端点返回的是用户信息列表，不是好友关系对象
+            # 所有返回的用户都是好友，我们直接显示他们
+            
+            # 发送好友总数概览
+            total_count = len(friends)
+            
+            overview_message = (
+                f"👥 好友列表 (共 {total_count} 个)\n"
+                f"正在逐个发送好友信息..."
+            )
+            await event.send(MessageChain([Comp.Plain(overview_message)]))
+            
+            # 发送所有好友信息
+            for i, friend in enumerate(friends, 1):
+                await self._send_friend_info(event, friend, i, total_count, "👥")
+                if i < total_count:  # 最后一个不需要延迟
+                    await asyncio.sleep(0.3)  # 避免发送过快
+            
+        except Exception as e:
+            logger.error(f"获取好友列表失败: {e}")
+            await event.send(MessageChain([Comp.Plain(
+                f"❌ 获取好友列表失败: {str(e)}\n"
+                "请检查您是否有 friends.read 权限，或稍后重试"
+            )]))
+
+    @osu.group("search")
+    def search(self, event: AstrMessageEvent):
+        pass
+
+    @search.command("map")
+    async def search_map(self, event: AstrMessageEvent, query: str, num_per_page: int, page_num: int, flag: str = None):
+        """
+        搜索谱面
+
+        Args:
+            query: 搜索关键词
+            num_per_page: 每页显示的谱面数量
+            page_num: 页码
+            flag: 启用高级搜索flag
+        """
+        
+        auth_ok, platform_id, osu_id = await self._check_user_authentication(event, [Scopes.PUBLIC])
+        if not auth_ok:
+            return
+        
+        # 参数验证
+        if not query:
+            await event.send(MessageChain([Comp.Plain(
+                "❌ 请提供搜索关键词\n"
+                "用法: /osu search map <关键词> <每页数量> <页码> [advanced]\n"
+                "示例: /osu search map xi 10 1"
+            )]))
+            return
+        
+        if num_per_page <= 0 or num_per_page > 50:
+            await event.send(MessageChain([Comp.Plain(
+                "❌ 每页数量必须在 1-50 之间"
+            )]))
+            return
+        
+        if page_num < 1:
+            await event.send(MessageChain([Comp.Plain(
+                "❌ 页码必须大于 0"
+            )]))
+            return
+        
+        try:
+            if flag == "advanced":
+                # 处理高级搜索逻辑
+                await event.send(MessageChain([Comp.Plain(
+                    "🔍 高级谱面搜索\n\n"
+                    "请按以下格式提供高级搜索参数（每行一个参数，可跳过不需要的参数）：\n\n"
+                    "🎵 艺术家（artist）: \n"
+                    "🎤 创建者（creator）: \n"
+                    "⭐ 最小星级（min_stars）: \n"
+                    "⭐ 最大星级（max_stars）: \n"
+                    "🎮 游戏模式（mode，osu/taiko/fruits/mania）: \n"
+                    "📋 状态（status，ranked/loved/pending/qualified）: \n"
+                    "📅 年份（year）: \n"
+                    "🏷️ 类型（genre_id，1-未指定 2-视频游戏 3-动漫 4-摇滚 5-流行 6-其他 7-新奇 9-嘻哈 10-电子 11-金属 12-古典 13-民俗 14-爵士）: \n"
+                    "🌐 语言（language_id，1-未指定 2-英语 3-日语 4-中文 5-韩语 6-法语 7-德语 8-瑞典语 9-西班牙语 10-意大利语 11-俄语 12-波兰语 13-其他）: \n\n"
+                    "示例：\n"
+                    "artist=xi\n"
+                    "min_stars=5.0\n"
+                    "max_stars=7.0\n"
+                    "mode=osu\n"
+                    "status=ranked\n\n"
+                    "⏰ 请在 5 分钟内发送，超时将取消搜索"
+                )]))
+                
+                # 设置会话等待高级搜索参数
+                search_params = {"query": query}
+                
+                @session_waiter(timeout=300)  # 5分钟超时
+                async def handle_advanced_search(controller: SessionController, event: AstrMessageEvent):
+                    try:
+                        user_input = event.message_str.strip()
+                        
+                        # 检查是否取消
+                        if user_input.lower() in ['取消', 'cancel', '退出', 'quit']:
+                            await event.send(MessageChain([Comp.Plain("❌ 已取消高级搜索")]))
+                            controller.stop()
+                            return
+                        
+                        # 解析高级搜索参数
+                        lines = user_input.split('\n')
+                        for line in lines:
+                            line = line.strip()
+                            if '=' in line:
+                                key, value = line.split('=', 1)
+                                key = key.strip()
+                                value = value.strip()
+                                
+                                if value:  # 只处理有值的参数
+                                    search_params[key] = value
+                        
+                        # 如果没有额外参数，只使用基础查询
+                        if len(search_params) == 1:  # 只有query
+                            await event.send(MessageChain([Comp.Plain(
+                                "ℹ️ 未提供额外搜索参数，将使用基础搜索"
+                            )]))
+                        
+                        await event.send(MessageChain([Comp.Plain(f"🔄 正在进行高级搜索...")]))
+                        
+                        # 准备搜索参数
+                        search_kwargs = {"platform_id": platform_id}
+                        
+                        # 映射基础查询
+                        if "query" in search_params:
+                            search_kwargs["query"] = search_params["query"]
+                        
+                        # 映射其他参数
+                        param_mapping = {
+                            "mode": "mode",
+                            "status": "category", 
+                            "genre_id": "genre",
+                            "language_id": "language",
+                        }
+                        
+                        for user_param, api_param in param_mapping.items():
+                            if user_param in search_params:
+                                search_kwargs[api_param] = search_params[user_param]
+                        
+                        # 执行高级搜索
+                        search_results = await self.osu_client.search_beatmapsets(**search_kwargs)
+                        
+                        # 处理搜索结果（限制返回数量和分页）
+                        if search_results and hasattr(search_results, 'beatmapsets'):
+                            beatmapsets = search_results.beatmapsets
+                            # 计算分页
+                            start_idx = (page_num - 1) * num_per_page
+                            end_idx = start_idx + num_per_page
+                            paginated_beatmapsets = beatmapsets[start_idx:end_idx]
+                            
+                            # 创建分页后的结果对象
+                            try:
+                                paginated_results = type(search_results)(
+                                    beatmapsets=paginated_beatmapsets,
+                                    cursor=getattr(search_results, 'cursor', None),
+                                    search=getattr(search_results, 'search', None),
+                                    recommended_difficulty=getattr(search_results, 'recommended_difficulty', None),
+                                    error=getattr(search_results, 'error', None),
+                                    total=getattr(search_results, 'total', None)
+                                )
+                            except Exception:
+                                # 如果无法创建相同类型的对象，创建一个简单的对象
+                                class SimpleSearchResult:
+                                    def __init__(self, beatmapsets, cursor=None):
+                                        self.beatmapsets = beatmapsets
+                                        self.cursor = cursor
+                                
+                                paginated_results = SimpleSearchResult(
+                                    beatmapsets=paginated_beatmapsets,
+                                    cursor=getattr(search_results, 'cursor', None)
+                                )
+                            
+                            await self._process_search_results(event, paginated_results, num_per_page, page_num, "高级搜索")
+                        else:
+                            await self._process_search_results(event, search_results, num_per_page, page_num, "高级搜索")
+                        
+                        controller.stop()
+                        
+                    except Exception as e:
+                        logger.error(f"高级搜索失败: {e}")
+                        await event.send(MessageChain([Comp.Plain(
+                            f"❌ 高级搜索失败: {str(e)}\n"
+                            "请检查搜索参数格式是否正确"
+                        )]))
+                        controller.stop()
+                
+                # 开始等待用户输入
+                try:
+                    await handle_advanced_search(event)
+                except TimeoutError:
+                    await event.send(MessageChain([Comp.Plain(
+                        "⏰ 输入超时（5分钟），高级搜索已取消"
+                    )]))
+                    
+            else:
+                # 处理普通搜索逻辑
+                await event.send(MessageChain([Comp.Plain(f"🔄 正在搜索谱面：{query}...")]))
+                
+                # 执行普通搜索
+                search_results = await self.osu_client.search_beatmapsets(
+                    platform_id=platform_id, 
+                    query=query
+                )
+                
+                # 处理搜索结果（限制返回数量和分页）
+                if search_results and hasattr(search_results, 'beatmapsets'):
+                    beatmapsets = search_results.beatmapsets
+                    # 计算分页
+                    start_idx = (page_num - 1) * num_per_page
+                    end_idx = start_idx + num_per_page
+                    paginated_beatmapsets = beatmapsets[start_idx:end_idx]
+                    
+                    # 创建分页后的结果对象
+                    try:
+                        paginated_results = type(search_results)(
+                            beatmapsets=paginated_beatmapsets,
+                            cursor=getattr(search_results, 'cursor', None),
+                            search=getattr(search_results, 'search', None),
+                            recommended_difficulty=getattr(search_results, 'recommended_difficulty', None),
+                            error=getattr(search_results, 'error', None),
+                            total=getattr(search_results, 'total', None)
+                        )
+                    except Exception:
+                        # 如果无法创建相同类型的对象，创建一个简单的对象
+                        class SimpleSearchResult:
+                            def __init__(self, beatmapsets, cursor=None):
+                                self.beatmapsets = beatmapsets
+                                self.cursor = cursor
+                        
+                        paginated_results = SimpleSearchResult(
+                            beatmapsets=paginated_beatmapsets,
+                            cursor=getattr(search_results, 'cursor', None)
+                        )
+                    
+                    await self._process_search_results(event, paginated_results, num_per_page, page_num, "普通搜索")
+                else:
+                    await self._process_search_results(event, search_results, num_per_page, page_num, "普通搜索")
+                
+        except Exception as e:
+            logger.error(f"搜索谱面失败: {e}")
+            await event.send(MessageChain([Comp.Plain(
+                f"❌ 搜索失败: {str(e)}\n"
+                "请稍后重试"
+            )]))
+
+    async def _process_search_results(self, event: AstrMessageEvent, search_results, num_per_page: int, page_num: int, search_type: str):
+        """
+        处理搜索结果并发送消息
+        
+        Args:
+            event: 消息事件
+            search_results: 搜索结果对象
+            num_per_page: 每页数量
+            page_num: 页码
+            search_type: 搜索类型（用于显示）
+        """
+        if not search_results or not hasattr(search_results, 'beatmapsets') or not search_results.beatmapsets:
+            await event.send(MessageChain([Comp.Plain(
+                f"🔍 {search_type}结果：未找到匹配的谱面"
+            )]))
+            return
+        
+        beatmapsets = search_results.beatmapsets
+        total_found = len(beatmapsets)
+        
+        # 发送搜索概览
+        cursor_info = ""
+        if hasattr(search_results, 'cursor') and search_results.cursor:
+            cursor_info = f"\n📄 搜索游标：{search_results.cursor}"
+        
+        overview_message = (
+            f"🔍 {search_type}结果\n"
+            f"📊 第 {page_num} 页，找到 {total_found} 个谱面集{cursor_info}\n"
+            f"正在发送详细信息..."
+        )
+        await event.send(MessageChain([Comp.Plain(overview_message)]))
+        
+        # 逐个发送谱面集信息
+        for i, beatmapset in enumerate(beatmapsets, 1):
+            try:
+                # 格式化谱面集信息
+                cover_url, beatmapset_message = self._format_beatmapset_info(beatmapset)
+                
+                # 构建消息链
+                chain = []
+                if cover_url:
+                    chain.append(Comp.Image.fromURL(cover_url))
+                
+                # 添加序号前缀
+                prefixed_message = f"【{i}/{total_found}】\n{beatmapset_message}"
+                chain.append(Comp.Plain(prefixed_message))
+                
+                # 发送单个谱面集信息
+                await event.send(MessageChain(chain))
+                
+                # 稍微延迟避免发送过快
+                if i < total_found:  # 最后一个不需要延迟
+                    await asyncio.sleep(0.5)
+                    
+            except Exception as e:
+                logger.error(f"发送谱面集 {i} 信息失败: {e}")
+                await event.send(MessageChain([Comp.Plain(
+                    f"❌ 【{i}/{total_found}】发送谱面集信息失败: {str(e)}"
+                )]))
+        
+        # 发送翻页提示
+        if total_found == num_per_page:
+            next_page_tip = f"\n💡 可能还有更多结果，使用 /osu search map <关键词> {num_per_page} {page_num + 1} 查看下一页"
+            await event.send(MessageChain([Comp.Plain(
+                f"✅ 搜索完成！{next_page_tip}"
+            )]))
+        else:
+            await event.send(MessageChain([Comp.Plain("✅ 搜索完成！")]))
+
+    async def _send_friend_info(self, event: AstrMessageEvent, friend, index: int, total: int, prefix: str):
+        """
+        发送单个好友的信息
+        
+        Args:
+            event: 消息事件
+            friend: 好友用户数据（UserExtended对象）
+            index: 当前索引
+            total: 总数
+            prefix: 前缀图标
+        """
+        # 处理 UserExtended 对象
+        if hasattr(friend, 'username'):
+            # 直接从 UserExtended 对象获取用户信息
+            username = friend.username or '未知'
+            user_id = friend.id or '未知'
+            is_online = friend.is_online
+            avatar_url = friend.avatar_url
+        elif isinstance(friend, dict):
+            # 兼容字典格式
+            username = friend.get('username', '未知')
+            user_id = friend.get('id', '未知')
+            is_online = friend.get('is_online', None)
+            avatar_url = friend.get('avatar_url', None)
+        else:
+            # 其他格式兼容
+            username = getattr(friend, 'username', '未知')
+            user_id = getattr(friend, 'id', '未知')
+            is_online = getattr(friend, 'is_online', None)
+            avatar_url = getattr(friend, 'avatar_url', None)
+        
+        # 构建在线状态
+        if is_online is True:
+            online_status = "🟢 在线"
+        elif is_online is False:
+            online_status = "🔴 离线"
+        else:
+            online_status = "❓ 未知"
+        
+        # 检查好友是否在本机器人中绑定了账号
+        friend_platform_id = self.link_account_manager.get_platform_id_by_osu(str(user_id))
+        bind_status = f"🔗 已绑定: {friend_platform_id}" if friend_platform_id else "❌ 未绑定"
+        
+        friend_message = (
+            f"{prefix} 【{index}/{total}】\n"
+            f"🎮 用户名: {username}\n"
+            f"📡 状态: {online_status}\n"
+            f"{bind_status}"
+        )
+        
+        # 构建消息链
+        chain = []
+        
+        # 添加头像
+        if avatar_url:
+            chain.append(Comp.Image.fromURL(avatar_url))
+        
+        chain.append(Comp.Plain(friend_message))
+        
+        # 发送消息
+        await event.send(MessageChain(chain))
+
+    def _format_beatmap_info(self, beatmap_info) -> str:
+        """
+        格式化谱面信息为可读文本
+        
+        Args:
+            beatmap_info: BeatmapExtended 对象
+            
+        Returns:
+            str: 格式化后的谱面信息文本
+        """
+        # 基本信息
+        basic_info = [
+            "🗺️ 谱面信息:",
+            f"🎵 标题: {beatmap_info.beatmapset.title if beatmap_info.beatmapset else '未知'}",
+            f"👤 作者: {beatmap_info.beatmapset.artist if beatmap_info.beatmapset else '未知'}",
+            f"⭐ 难度: {beatmap_info.version}",
+            f"🆔 谱面ID: {beatmap_info.id}",
+            f"🎯 谱面集ID: {beatmap_info.beatmapset_id}",
+        ]
+        
+        # 制作者信息
+        if beatmap_info.beatmapset and beatmap_info.beatmapset.creator:
+            basic_info.append(f"🎨 制作者: {beatmap_info.beatmapset.creator}")
+        
+        # 难度统计
+        if beatmap_info.difficulty_rating:
+            basic_info.append(f"⭐ 星级: {beatmap_info.difficulty_rating:.2f}")
+        
+        # 谱面统计
+        stats_info = []
+        if beatmap_info.bpm:
+            stats_info.append(f"🎼 BPM: {beatmap_info.bpm}")
+        if beatmap_info.total_length:
+            minutes = beatmap_info.total_length // 60
+            seconds = beatmap_info.total_length % 60
+            stats_info.append(f"⏱️ 长度: {minutes}:{seconds:02d}")
+        if beatmap_info.count_circles is not None:
+            stats_info.append(f"⭕ 圆圈: {beatmap_info.count_circles}")
+        if beatmap_info.count_sliders is not None:
+            stats_info.append(f"🔗 滑条: {beatmap_info.count_sliders}")
+        if beatmap_info.count_spinners is not None:
+            stats_info.append(f"🌀 转盘: {beatmap_info.count_spinners}")
+        
+        if stats_info:
+            basic_info.append("")
+            basic_info.append("📊 谱面统计:")
+            basic_info.extend(stats_info)
+        
+        # 状态信息
+        if hasattr(beatmap_info, 'status') and beatmap_info.status:
+            status_map = {
+                'graveyard': '⚰️ 坟场',
+                'wip': '🚧 制作中',
+                'pending': '⏳ 待审核',
+                'ranked': '✅ Ranked',
+                'approved': '👑 Approved',
+                'qualified': '🔰 Qualified',
+                'loved': '❤️ Loved'
+            }
+            status_text = status_map.get(beatmap_info.status, beatmap_info.status)
+            basic_info.append(f"📋 状态: {status_text}")
+        
+        # 模式信息
+        if hasattr(beatmap_info, 'mode') and beatmap_info.mode:
+            mode_map = {
+                'osu': '🎯 osu!',
+                'taiko': '🥁 taiko',
+                'fruits': '🍎 catch',
+                'mania': '🎹 mania'
+            }
+            mode_text = mode_map.get(beatmap_info.mode, beatmap_info.mode)
+            basic_info.append(f"🎮 模式: {mode_text}")
+        
+        return "\n".join(basic_info)
+
+    def _format_beatmapset_info(self, beatmapset_info) -> tuple[str, str]:
+        """
+        格式化谱面集信息为可读文本
+        
+        Args:
+            beatmapset_info: BeatmapsetExtended 对象
+            
+        Returns:
+            tuple[str, str]: (cover_url, formatted_text) 封面URL和格式化后的谱面集信息文本
+        """
+        # 基本信息
+        basic_info = [
+            "🗂️ 谱面集信息:",
+            f"🎵 标题: {beatmapset_info.title}",
+            f"👤 艺术家: {beatmapset_info.artist}",
+            f"🎨 制作者: {beatmapset_info.creator}",
+            f"🆔 谱面集ID: {beatmapset_info.id}",
+        ]
+        
+        # 状态信息
+        if hasattr(beatmapset_info, 'status') and beatmapset_info.status:
+            status_map = {
+                'graveyard': '⚰️ 坟场',
+                'wip': '🚧 制作中',
+                'pending': '⏳ 待审核',
+                'ranked': '✅ Ranked',
+                'approved': '👑 Approved',
+                'qualified': '🔰 Qualified',
+                'loved': '❤️ Loved'
+            }
+            status_text = status_map.get(beatmapset_info.status, beatmapset_info.status)
+            basic_info.append(f"📋 状态: {status_text}")
+        
+        # 日期信息
+        if hasattr(beatmapset_info, 'submitted_date') and beatmapset_info.submitted_date:
+            basic_info.append(f"📅 提交日期: {beatmapset_info.submitted_date[:10]}")
+        if hasattr(beatmapset_info, 'ranked_date') and beatmapset_info.ranked_date:
+            basic_info.append(f"🏆 Ranked日期: {beatmapset_info.ranked_date[:10]}")
+        
+        # 谱面统计
+        if hasattr(beatmapset_info, 'beatmaps') and beatmapset_info.beatmaps:
+            beatmaps = beatmapset_info.beatmaps
+            basic_info.append("")
+            basic_info.append(f"🗺️ 包含谱面数: {len(beatmaps)}")
+            
+            # 按模式分组统计
+            mode_counts = {}
+            difficulty_range = {'min': float('inf'), 'max': 0}
+            
+            for beatmap in beatmaps:
+                mode = beatmap.get('mode', 'osu') if isinstance(beatmap, dict) else getattr(beatmap, 'mode', 'osu')
+                mode_counts[mode] = mode_counts.get(mode, 0) + 1
+                
+                # 统计难度范围
+                diff_rating = beatmap.get('difficulty_rating', 0) if isinstance(beatmap, dict) else getattr(beatmap, 'difficulty_rating', 0)
+                if diff_rating:
+                    difficulty_range['min'] = min(difficulty_range['min'], diff_rating)
+                    difficulty_range['max'] = max(difficulty_range['max'], diff_rating)
+            
+            # 显示模式分布
+            mode_map = {
+                'osu': '🎯 osu!',
+                'taiko': '🥁 taiko', 
+                'fruits': '🍎 catch',
+                'mania': '🎹 mania'
+            }
+            
+            mode_info = []
+            for mode, count in mode_counts.items():
+                mode_text = mode_map.get(mode, mode)
+                mode_info.append(f"  {mode_text}: {count}个")
+            
+            if mode_info:
+                basic_info.extend(mode_info)
+            
+            # 显示难度范围
+            if difficulty_range['min'] != float('inf'):
+                basic_info.append(f"⭐ 难度范围: {difficulty_range['min']:.2f} - {difficulty_range['max']:.2f}")
+        
+        # 统计信息
+        stats_info = []
+        if hasattr(beatmapset_info, 'play_count') and beatmapset_info.play_count:
+            stats_info.append(f"▶️ 游玩次数: {beatmapset_info.play_count:,}")
+        if hasattr(beatmapset_info, 'favourite_count') and beatmapset_info.favourite_count:
+            stats_info.append(f"❤️ 收藏数: {beatmapset_info.favourite_count:,}")
+        
+        if stats_info:
+            basic_info.append("")
+            basic_info.append("📊 统计信息:")
+            basic_info.extend(stats_info)
+        
+        # 获取封面图片URL
+        cover_url = None
+        if hasattr(beatmapset_info, 'covers') and beatmapset_info.covers:
+            # 优先使用 cover_2x，其次 cover，最后 list_2x
+            covers = beatmapset_info.covers
+            cover_url = (covers.cover_2x or 
+                        covers.cover or 
+                        covers.list_2x or 
+                        covers.list)
+        
+        return cover_url, "\n".join(basic_info)
+
     def _format_user_info(self, user_info, is_self: bool = False) -> tuple[str, str]:
         """
         格式化用户信息为可读文本
@@ -708,7 +1530,13 @@ class OsuTrackPlugin(Star):
                 "查询功能:\n"
                 "  /osu me [模式] - 查看自己的信息\n"
                 "  /osu user <用户名/ID> [模式] [类型] - 查看指定用户信息\n"
-                "  /osu users - 批量查询用户信息（对话模式）\n\n"
+                "  /osu users - 批量查询用户信息（对话模式）\n"
+                "  /osu friend - 查看好友列表\n"
+                "  /osu map <谱面ID> - 查看谱面信息\n"
+                "  /osu mapset <谱面集ID> - 查看谱面集信息\n"
+                "  /osu mapsets - 批量查询谱面集信息（对话模式）\n\n"
+                "搜索功能:\n"
+                "  /osu search map <关键词> [单页数量] [页码] [高级搜索] - 查询谱面\n"
                 "成绩统计功能:\n"
                 "  /osu update [模式] - 上传成绩到 OSU!track（默认 osu 模式）\n\n"
                 "帮助:\n"
